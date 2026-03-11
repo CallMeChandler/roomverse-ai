@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Environments
+venv/
+.venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model caches
+.cache/
+.huggingface/
+torchhub/
+checkpoints/
+
+# Output files
+backend/data/output/*
+!backend/data/output/.gitkeep
+
+# Input images (optional - usually do not commit private room photos)
+backend/data/input/*
+!backend/data/input/.gitkeep
+
+# IDE
+.vscode/
+.idea/
