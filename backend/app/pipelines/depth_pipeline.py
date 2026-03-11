@@ -98,7 +98,7 @@ class MidasDepthPipeline:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        depth_norm = MidasDepthPipeline.normalize_depth_for_display(depth_map, invert=True)
+        depth_norm = MidasDepthPipeline.normalize_depth_for_display(depth_map, invert=False)
         plt.imsave(output_path, depth_norm, cmap="plasma")
 
     @staticmethod
@@ -109,7 +109,7 @@ class MidasDepthPipeline:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        depth_norm = MidasDepthPipeline.normalize_depth_for_display(depth_map, invert=True)
+        depth_norm = MidasDepthPipeline.normalize_depth_for_display(depth_map, invert=False)
         depth_uint8 = (depth_norm * 255).astype(np.uint8)
         cv2.imwrite(str(output_path), depth_uint8)
 
