@@ -10,6 +10,7 @@ from app.pipelines.preprocess import (
 )
 from app.pipelines.depth_pipeline import MidasDepthPipeline
 from app.pipelines.segmentation_pipeline import SAMSegmentationPipeline
+from app.pipelines.reasoning_pipeline import RoomReasoningPipeline
 
 
 def main() -> None:
@@ -17,10 +18,10 @@ def main() -> None:
     output_dir = Path("data/output")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("\n--- Phase 3: Room image -> MiDaS depth + SAM segmentation ---\n")
+    print("\n--- Phase 4: Depth + segmentation -> structured room reasoning ---\n")
 
     # -------------------------------------------------
-    # Part A: Phase 1 pipeline recap
+    # Part A: Phase 1 recap
     # -------------------------------------------------
     image = load_image(image_path)
     info = get_image_info(image)
@@ -101,19 +102,39 @@ def main() -> None:
     print()
 
     # -------------------------------------------------
-    # Part D: tiny geometry preview for top 3 masks
+    # Part D: reasoning layer
     # -------------------------------------------------
-    print("Top 3 mask geometry summaries:")
-    for i, mask_data in enumerate(masks[:3]):
-        stats = segmentation_pipeline.extract_mask_stats(mask_data)
-        print(f"Mask {i + 1}:")
-        print(f"  area       = {stats['area']}")
-        print(f"  centroid_x = {stats['centroid_x']}")
-        print(f"  centroid_y = {stats['centroid_y']}")
-        print(f"  bbox       = {stats['bbox']}")
-        print()
+    reasoning_pipeline = RoomReasoningPipeline(
+        min_mask_area=1500,
+        max_masks=15,
+    )
 
-    print("Phase 3 success: room image now produces masks + overlays.\n")
+    # If your chosen visualization convention means smaller raw values are nearer,
+    # keep this True. If later you confirm larger values are nearer for your setup,
+    # flip it to False.
+    reasoning_records = reasoning_pipeline.analyze_masks(
+        masks=masks,
+        depth_map=depth_map,
+        near_is_smaller=True,
+    )
+
+    reasoning_pipeline.describe_reasoning(reasoning_records, top_k=10)
+
+    reasoning_json_path = output_dir / "room_reasoning.json"
+    reasoning_pipeline.save_reasoning_json(reasoning_records, reasoning_json_path)
+
+    summaries = reasoning_pipeline.generate_room_summary(reasoning_records, top_k=5)
+
+    print("Saved reasoning output:")
+    print(f"  reasoning json -> {reasoning_json_path}")
+    print()
+
+    print("Coarse room summaries:")
+    for line in summaries:
+        print(f"  - {line}")
+    print()
+
+    print("Phase 4 success: depth + masks now produce structured room reasoning.\n")
 
 
 if __name__ == "__main__":
