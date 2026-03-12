@@ -11,6 +11,8 @@ from app.pipelines.preprocess import (
 from app.pipelines.depth_pipeline import MidasDepthPipeline
 from app.pipelines.segmentation_pipeline import SAMSegmentationPipeline
 from app.pipelines.reasoning_pipeline import RoomReasoningPipeline
+from app.pipelines.semantic_pipeline import CLIPSemanticPipeline
+from app.pipelines.game_map_pipeline import GameMapPipeline
 
 
 def main() -> None:
@@ -18,10 +20,10 @@ def main() -> None:
     output_dir = Path("data/output")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("\n--- Phase 5A: Interpreted room reasoning ---\n")
+    print("\n--- Phase 6: Game map abstraction ---\n")
 
     # -------------------------------------------------
-    # Part A: Input pipeline recap
+    # Part A: input recap
     # -------------------------------------------------
     image = load_image(image_path)
     info = get_image_info(image)
@@ -51,7 +53,7 @@ def main() -> None:
     describe_tensor("Tensor after normalization", normalized_tensor)
 
     # -------------------------------------------------
-    # Part B: MiDaS depth
+    # Part B: depth
     # -------------------------------------------------
     depth_pipeline = MidasDepthPipeline(model_type="MiDaS_small")
     depth_map = depth_pipeline.predict_depth(image)
@@ -69,7 +71,7 @@ def main() -> None:
     print()
 
     # -------------------------------------------------
-    # Part C: SAM segmentation
+    # Part C: SAM
     # -------------------------------------------------
     sam_checkpoint = Path("checkpoints/sam_vit_b_01ec64.pth")
     segmentation_pipeline = SAMSegmentationPipeline(
@@ -102,7 +104,7 @@ def main() -> None:
     print()
 
     # -------------------------------------------------
-    # Part D: structured reasoning
+    # Part D: reasoning
     # -------------------------------------------------
     reasoning_pipeline = RoomReasoningPipeline(
         min_mask_area=1500,
@@ -125,24 +127,104 @@ def main() -> None:
     print()
 
     # -------------------------------------------------
-    # Part E: interpreted room reasoning
+    # Part E: semantics with CLIP
     # -------------------------------------------------
-    interpreted_json_path = output_dir / "room_interpreted_reasoning.json"
-    reasoning_pipeline.save_interpreted_json(reasoning_records, interpreted_json_path)
-    reasoning_pipeline.describe_interpreted_regions(reasoning_records, top_k=10)
+    semantic_pipeline = CLIPSemanticPipeline()
 
-    summaries = reasoning_pipeline.generate_room_summary(reasoning_records, top_k=5)
+    candidate_labels = [
+        "wall",
+        "floor",
+        "bed",
+        "blanket",
+        "pillow",
+        "curtain",
+        "window",
+        "lamp",
+        "table",
+        "chair",
+        "door",
+        "shelf",
+        "cabinet",
+    ]
 
-    print("Saved interpreted reasoning output:")
-    print(f"  interpreted reasoning json -> {interpreted_json_path}")
+    semantic_results = semantic_pipeline.label_masks(
+        image=image,
+        masks=reasoning_pipeline.filter_masks(masks),
+        candidate_labels=candidate_labels,
+        top_n_masks=8,
+        top_k_labels=3,
+    )
+
+    semantic_reasoning_records = reasoning_pipeline.merge_semantic_labels(
+        reasoning_records=reasoning_records,
+        semantic_results=semantic_results,
+    )
+
+    semantic_reasoning_json_path = output_dir / "room_semantic_reasoning.json"
+    reasoning_pipeline.save_semantic_reasoning_json(
+        semantic_reasoning_records,
+        semantic_reasoning_json_path,
+    )
+    reasoning_pipeline.describe_semantic_reasoning(
+        semantic_reasoning_records,
+        top_k=8,
+    )
+
+    print("Saved semantic reasoning output:")
+    print(f"  semantic reasoning json -> {semantic_reasoning_json_path}")
     print()
 
-    print("Coarse interpreted room summaries:")
+    summaries = reasoning_pipeline.generate_room_summary(
+        semantic_reasoning_records,
+        top_k=5,
+    )
+
+    print("Semantic room summaries:")
     for line in summaries:
         print(f"  - {line}")
     print()
 
-    print("Phase 5A success: structured regions now have room-oriented interpretations.\n")
+    # -------------------------------------------------
+    # Part F: game map abstraction
+    # -------------------------------------------------
+    game_map_pipeline = GameMapPipeline()
+
+    symbolic_map = game_map_pipeline.build_symbolic_map(
+        semantic_reasoning_records=semantic_reasoning_records,
+        image_shape=depth_map.shape,
+    )
+
+    grid_map = game_map_pipeline.build_grid_map(
+        semantic_reasoning_records=semantic_reasoning_records,
+        image_shape=depth_map.shape,
+        grid_rows=8,
+        grid_cols=8,
+    )
+
+    symbolic_map_path = output_dir / "room_symbolic_game_map.json"
+    grid_map_path = output_dir / "room_grid_game_map.json"
+
+    game_map_pipeline.save_json(symbolic_map, symbolic_map_path)
+    game_map_pipeline.save_json(grid_map, grid_map_path)
+
+    print("Saved game map outputs:")
+    print(f"  symbolic map json -> {symbolic_map_path}")
+    print(f"  grid map json     -> {grid_map_path}")
+    print()
+
+    ascii_lines = game_map_pipeline.render_ascii_grid(grid_map)
+    print("ASCII game-map preview:")
+    for line in ascii_lines:
+        print(f"  {line}")
+    print()
+
+    game_summaries = game_map_pipeline.generate_game_map_summary(symbolic_map, grid_map)
+    print("Game map summaries:")
+    for line in game_summaries:
+        print(f"  - {line}")
+    print()
+
+    print("Phase 6 success: room understanding now maps into symbolic game-map structure.\n")
 
 
 if __name__ == "__main__":

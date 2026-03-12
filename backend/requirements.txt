@@ -6,3 +6,4 @@ matplotlib
 opencv-python
 timm
 git+https://github.com/facebookresearch/segment-anything.git
+transformers

@@ -82,9 +82,6 @@ class RoomReasoningPipeline:
 
     @staticmethod
     def _bbox_shape_label(bbox: list[float] | None) -> str:
-        """
-        bbox format from SAM is [x, y, w, h]
-        """
         if bbox is None:
             return "unknown"
 
@@ -212,106 +209,76 @@ class RoomReasoningPipeline:
             json.dump(records, f, indent=2)
 
     @staticmethod
-    def interpret_room_regions(records: list[dict]) -> list[dict]:
+    def merge_semantic_labels(
+        reasoning_records: list[dict],
+        semantic_results: list[dict],
+    ) -> list[dict]:
         """
-        Heuristic room-specific interpretation layer.
-        Adds a probable role to each important region.
+        Merge CLIP predictions into reasoning records by area-rank order.
+        Since both are run on masks sorted by area, this is a simple first-pass alignment.
         """
-        interpreted: list[dict] = []
+        merged = []
 
-        for rec in records:
-            role = "generic region"
-            confidence = "low"
+        for i, rec in enumerate(reasoning_records):
+            merged_rec = dict(rec)
 
-            area_label = rec["area_label"]
-            pos_x = rec["position_x"]
-            pos_y = rec["position_y"]
-            depth = rec["depth_label"]
-            shape = rec["shape_label"]
-            area_ratio = rec["area_ratio"]
+            if i < len(semantic_results):
+                sem = semantic_results[i]
+                merged_rec["semantic_best_label"] = sem.get("best_label")
+                merged_rec["semantic_best_score"] = sem.get("best_score")
+                merged_rec["semantic_top_predictions"] = sem.get("top_predictions", [])
+            else:
+                merged_rec["semantic_best_label"] = None
+                merged_rec["semantic_best_score"] = None
+                merged_rec["semantic_top_predictions"] = []
 
-            # Large upper / far-ish region -> likely wall/background
-            if area_label == "large" and pos_y == "top":
-                role = "likely background wall or upper room plane"
-                confidence = "medium"
+            merged.append(merged_rec)
 
-            # Large lower near/mid region -> likely bed / foreground furniture surface
-            elif area_label == "large" and pos_y == "bottom" and depth in {"near", "mid"}:
-                role = "likely bed, blanket, or large foreground furniture surface"
-                confidence = "medium"
+        return merged
 
-            # Large center-middle region -> dominant room structure / furniture mass
-            elif area_label == "large" and pos_y == "middle":
-                role = "likely dominant furniture or central room structure"
-                confidence = "medium"
+    @staticmethod
+    def describe_semantic_reasoning(records: list[dict], top_k: int = 10) -> None:
+        print("Semantic room reasoning:")
+        print()
 
-            # Tall side region -> edge wall / curtain / window-side strip
-            elif shape == "tall" and pos_x in {"left", "right"}:
-                role = "likely side wall edge, curtain, or vertical room-side region"
-                confidence = "medium"
+        for rec in records[:top_k]:
+            print(f"Mask {rec['mask_id']}:")
+            print(f"  position_label       = {rec['position_label']}")
+            print(f"  area_label           = {rec['area_label']}")
+            print(f"  depth_label          = {rec['depth_label']}")
+            print(f"  semantic_best_label  = {rec.get('semantic_best_label')}")
+            print(f"  semantic_best_score  = {rec.get('semantic_best_score')}")
+            print(f"  top_predictions      = {rec.get('semantic_top_predictions')}")
+            print()
 
-            # Medium near middle/side -> object cluster
-            elif area_label == "medium" and depth == "near" and pos_y in {"middle", "bottom"}:
-                role = "likely foreground furniture or object cluster"
-                confidence = "medium"
+    @staticmethod
+    def save_semantic_reasoning_json(records: list[dict], output_path: str | Path) -> None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Small near middle -> local object
-            elif area_label == "small" and depth == "near":
-                role = "likely smaller nearby object"
-                confidence = "low"
-
-            # Mid/far upper-middle -> background object or wall-attached region
-            elif depth in {"mid", "far"} and pos_y in {"top", "middle"}:
-                role = "likely background object or wall-adjacent region"
-                confidence = "low"
-
-            interpreted.append({
-                **rec,
-                "interpreted_role": role,
-                "interpretation_confidence": confidence,
-            })
-
-        return interpreted
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(records, f, indent=2)
 
     @staticmethod
     def generate_room_summary(records: list[dict], top_k: int = 5) -> list[str]:
         summaries: list[str] = []
 
-        interpreted = RoomReasoningPipeline.interpret_room_regions(records)
+        for rec in records[:top_k]:
+            label = rec.get("semantic_best_label")
+            score = rec.get("semantic_best_score")
 
-        for rec in interpreted[:top_k]:
-            line = (
-                f"Mask {rec['mask_id']} is a {rec['area_label']} region in the "
-                f"{rec['position_label']} area, with {rec['depth_label']} depth, "
-                f"and is interpreted as {rec['interpreted_role']}."
-            )
+            if label is not None and score is not None:
+                line = (
+                    f"Mask {rec['mask_id']} is a {rec['area_label']} region in the "
+                    f"{rec['position_label']} area, with {rec['depth_label']} depth, "
+                    f"and is most likely '{label}' (score {score})."
+                )
+            else:
+                line = (
+                    f"Mask {rec['mask_id']} is a {rec['area_label']} region in the "
+                    f"{rec['position_label']} area, with {rec['depth_label']} depth."
+                )
+
             summaries.append(line)
 
         return summaries
-
-    @staticmethod
-    def describe_interpreted_regions(records: list[dict], top_k: int = 10) -> None:
-        interpreted = RoomReasoningPipeline.interpret_room_regions(records)
-
-        print("Interpreted room regions:")
-        print()
-
-        for rec in interpreted[:top_k]:
-            print(f"Mask {rec['mask_id']}:")
-            print(f"  position_label            = {rec['position_label']}")
-            print(f"  area_label                = {rec['area_label']}")
-            print(f"  depth_label               = {rec['depth_label']}")
-            print(f"  shape_label               = {rec['shape_label']}")
-            print(f"  interpreted_role          = {rec['interpreted_role']}")
-            print(f"  interpretation_confidence = {rec['interpretation_confidence']}")
-            print()
-
-    @staticmethod
-    def save_interpreted_json(records: list[dict], output_path: str | Path) -> None:
-        interpreted = RoomReasoningPipeline.interpret_room_regions(records)
-
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(interpreted, f, indent=2)
