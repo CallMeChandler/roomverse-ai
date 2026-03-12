@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import numpy as np
-
 from app.pipelines.image_loader import load_image, get_image_info
 from app.pipelines.preprocess import (
     pil_to_numpy,
@@ -11,6 +9,7 @@ from app.pipelines.preprocess import (
     describe_tensor,
 )
 from app.pipelines.depth_pipeline import MidasDepthPipeline
+from app.pipelines.segmentation_pipeline import SAMSegmentationPipeline
 
 
 def main() -> None:
@@ -18,10 +17,10 @@ def main() -> None:
     output_dir = Path("data/output")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("\n--- Phase 2: Room image -> MiDaS depth map ---\n")
+    print("\n--- Phase 3: Room image -> MiDaS depth + SAM segmentation ---\n")
 
     # -------------------------------------------------
-    # Part A: Reuse Phase 1 understanding pipeline
+    # Part A: Phase 1 pipeline recap
     # -------------------------------------------------
     image = load_image(image_path)
     info = get_image_info(image)
@@ -34,7 +33,7 @@ def main() -> None:
 
     image_np = pil_to_numpy(image)
     print("NumPy image:")
-    print(f"  shape = {image_np.shape}")   # (H, W, C)
+    print(f"  shape = {image_np.shape}")
     print(f"  dtype = {image_np.dtype}")
     print(f"  min   = {image_np.min():.1f}")
     print(f"  max   = {image_np.max():.1f}")
@@ -51,20 +50,16 @@ def main() -> None:
     describe_tensor("Tensor after normalization", normalized_tensor)
 
     # -------------------------------------------------
-    # Part B: MiDaS depth inference
+    # Part B: MiDaS depth
     # -------------------------------------------------
     depth_pipeline = MidasDepthPipeline(model_type="MiDaS_small")
     depth_map = depth_pipeline.predict_depth(image)
     depth_pipeline.describe_depth(depth_map)
 
-    # -------------------------------------------------
-    # Part C: Save outputs
-    # -------------------------------------------------
     color_depth_path = output_dir / "room_depth_plasma.png"
     gray_depth_path = output_dir / "room_depth_gray.png"
 
     depth_pipeline.save_depth_visualization(depth_map, color_depth_path)
-    depth_pipeline.save_depth_grayscale(depth_map, gray_depth_path)
     depth_pipeline.save_depth_grayscale(depth_map, gray_depth_path)
 
     print("Saved depth outputs:")
@@ -73,20 +68,52 @@ def main() -> None:
     print()
 
     # -------------------------------------------------
-    # Part D: Tiny interpretation
+    # Part C: SAM segmentation
     # -------------------------------------------------
-    h, w = depth_map.shape
-    center_depth = depth_map[h // 2, w // 2]
-    top_depth = depth_map[h // 4, w // 2]
-    bottom_depth = depth_map[(3 * h) // 4, w // 2]
+    sam_checkpoint = Path("checkpoints/sam_vit_b_01ec64.pth")
+    segmentation_pipeline = SAMSegmentationPipeline(
+        checkpoint_path=sam_checkpoint,
+        model_type="vit_b",
+    )
 
-    print("Quick depth probes:")
-    print(f"  top-center depth value    = {top_depth:.4f}")
-    print(f"  center depth value        = {center_depth:.4f}")
-    print(f"  bottom-center depth value = {bottom_depth:.4f}")
+    masks = segmentation_pipeline.predict_masks(image)
+    segmentation_pipeline.describe_masks(masks, top_k=10)
+
+    mask_overlay_path = output_dir / "room_sam_overlay.png"
+    top_masks_dir = output_dir / "sam_top_masks"
+
+    segmentation_pipeline.save_mask_overlay(
+        image=image,
+        masks=masks,
+        output_path=mask_overlay_path,
+        top_k=20,
+        alpha=0.45,
+    )
+    segmentation_pipeline.save_top_masks(
+        masks=masks,
+        output_dir=top_masks_dir,
+        top_k=5,
+    )
+
+    print("Saved segmentation outputs:")
+    print(f"  mask overlay -> {mask_overlay_path}")
+    print(f"  top masks dir -> {top_masks_dir}")
     print()
-    print("These are raw relative-depth values, not exact meters.")
-    print("Phase 2 success: room image now produces a dense depth map.\n")
+
+    # -------------------------------------------------
+    # Part D: tiny geometry preview for top 3 masks
+    # -------------------------------------------------
+    print("Top 3 mask geometry summaries:")
+    for i, mask_data in enumerate(masks[:3]):
+        stats = segmentation_pipeline.extract_mask_stats(mask_data)
+        print(f"Mask {i + 1}:")
+        print(f"  area       = {stats['area']}")
+        print(f"  centroid_x = {stats['centroid_x']}")
+        print(f"  centroid_y = {stats['centroid_y']}")
+        print(f"  bbox       = {stats['bbox']}")
+        print()
+
+    print("Phase 3 success: room image now produces masks + overlays.\n")
 
 
 if __name__ == "__main__":
