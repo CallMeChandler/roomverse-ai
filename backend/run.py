@@ -18,10 +18,10 @@ def main() -> None:
     output_dir = Path("data/output")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("\n--- Phase 4: Depth + segmentation -> structured room reasoning ---\n")
+    print("\n--- Phase 5A: Interpreted room reasoning ---\n")
 
     # -------------------------------------------------
-    # Part A: Phase 1 recap
+    # Part A: Input pipeline recap
     # -------------------------------------------------
     image = load_image(image_path)
     info = get_image_info(image)
@@ -102,16 +102,13 @@ def main() -> None:
     print()
 
     # -------------------------------------------------
-    # Part D: reasoning layer
+    # Part D: structured reasoning
     # -------------------------------------------------
     reasoning_pipeline = RoomReasoningPipeline(
         min_mask_area=1500,
         max_masks=15,
     )
 
-    # If your chosen visualization convention means smaller raw values are nearer,
-    # keep this True. If later you confirm larger values are nearer for your setup,
-    # flip it to False.
     reasoning_records = reasoning_pipeline.analyze_masks(
         masks=masks,
         depth_map=depth_map,
@@ -123,18 +120,29 @@ def main() -> None:
     reasoning_json_path = output_dir / "room_reasoning.json"
     reasoning_pipeline.save_reasoning_json(reasoning_records, reasoning_json_path)
 
-    summaries = reasoning_pipeline.generate_room_summary(reasoning_records, top_k=5)
-
     print("Saved reasoning output:")
     print(f"  reasoning json -> {reasoning_json_path}")
     print()
 
-    print("Coarse room summaries:")
+    # -------------------------------------------------
+    # Part E: interpreted room reasoning
+    # -------------------------------------------------
+    interpreted_json_path = output_dir / "room_interpreted_reasoning.json"
+    reasoning_pipeline.save_interpreted_json(reasoning_records, interpreted_json_path)
+    reasoning_pipeline.describe_interpreted_regions(reasoning_records, top_k=10)
+
+    summaries = reasoning_pipeline.generate_room_summary(reasoning_records, top_k=5)
+
+    print("Saved interpreted reasoning output:")
+    print(f"  interpreted reasoning json -> {interpreted_json_path}")
+    print()
+
+    print("Coarse interpreted room summaries:")
     for line in summaries:
         print(f"  - {line}")
     print()
 
-    print("Phase 4 success: depth + masks now produce structured room reasoning.\n")
+    print("Phase 5A success: structured regions now have room-oriented interpretations.\n")
 
 
 if __name__ == "__main__":

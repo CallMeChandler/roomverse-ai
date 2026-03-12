@@ -16,9 +16,6 @@ class RoomReasoningPipeline:
         self.max_masks = max_masks
 
     def filter_masks(self, masks: list[dict]) -> list[dict]:
-        """
-        Keep only reasonably large masks and cap total count.
-        """
         filtered = [m for m in masks if int(m["area"]) >= self.min_mask_area]
         filtered = sorted(filtered, key=lambda x: x["area"], reverse=True)
         return filtered[: self.max_masks]
@@ -83,15 +80,31 @@ class RoomReasoningPipeline:
                 return "far"
             return "mid"
 
+    @staticmethod
+    def _bbox_shape_label(bbox: list[float] | None) -> str:
+        """
+        bbox format from SAM is [x, y, w, h]
+        """
+        if bbox is None:
+            return "unknown"
+
+        _, _, w, h = bbox
+        if w <= 0 or h <= 0:
+            return "unknown"
+
+        ratio = h / w
+        if ratio > 1.8:
+            return "tall"
+        if ratio < 0.6:
+            return "wide"
+        return "balanced"
+
     def analyze_masks(
         self,
         masks: list[dict],
         depth_map: np.ndarray,
         near_is_smaller: bool = True,
     ) -> list[dict]:
-        """
-        Combine SAM masks with MiDaS depth into structured reasoning records.
-        """
         height, width = depth_map.shape
         image_area = height * width
 
@@ -133,6 +146,7 @@ class RoomReasoningPipeline:
                 far_thresh=far_thresh,
                 near_is_smaller=near_is_smaller,
             )
+            shape_label = self._bbox_shape_label(bbox)
 
             area_ratio = area / image_area
             priority_score = float(area_ratio * 0.7)
@@ -153,6 +167,7 @@ class RoomReasoningPipeline:
                 "position_y": y_pos,
                 "position_label": f"{x_pos}-{y_pos}",
                 "bbox": bbox,
+                "shape_label": shape_label,
                 "depth_mean": round(mean_depth, 4),
                 "depth_median": round(median_depth, 4),
                 "depth_p10": round(p10_depth, 4) if p10_depth is not None else None,
@@ -179,6 +194,7 @@ class RoomReasoningPipeline:
             print(f"  position        = {rec['position_label']}")
             print(f"  centroid        = ({rec['centroid_x']}, {rec['centroid_y']})")
             print(f"  bbox            = {rec['bbox']}")
+            print(f"  shape_label     = {rec['shape_label']}")
             print(f"  depth_mean      = {rec['depth_mean']}")
             print(f"  depth_median    = {rec['depth_median']}")
             print(f"  depth_label     = {rec['depth_label']}")
@@ -196,14 +212,106 @@ class RoomReasoningPipeline:
             json.dump(records, f, indent=2)
 
     @staticmethod
+    def interpret_room_regions(records: list[dict]) -> list[dict]:
+        """
+        Heuristic room-specific interpretation layer.
+        Adds a probable role to each important region.
+        """
+        interpreted: list[dict] = []
+
+        for rec in records:
+            role = "generic region"
+            confidence = "low"
+
+            area_label = rec["area_label"]
+            pos_x = rec["position_x"]
+            pos_y = rec["position_y"]
+            depth = rec["depth_label"]
+            shape = rec["shape_label"]
+            area_ratio = rec["area_ratio"]
+
+            # Large upper / far-ish region -> likely wall/background
+            if area_label == "large" and pos_y == "top":
+                role = "likely background wall or upper room plane"
+                confidence = "medium"
+
+            # Large lower near/mid region -> likely bed / foreground furniture surface
+            elif area_label == "large" and pos_y == "bottom" and depth in {"near", "mid"}:
+                role = "likely bed, blanket, or large foreground furniture surface"
+                confidence = "medium"
+
+            # Large center-middle region -> dominant room structure / furniture mass
+            elif area_label == "large" and pos_y == "middle":
+                role = "likely dominant furniture or central room structure"
+                confidence = "medium"
+
+            # Tall side region -> edge wall / curtain / window-side strip
+            elif shape == "tall" and pos_x in {"left", "right"}:
+                role = "likely side wall edge, curtain, or vertical room-side region"
+                confidence = "medium"
+
+            # Medium near middle/side -> object cluster
+            elif area_label == "medium" and depth == "near" and pos_y in {"middle", "bottom"}:
+                role = "likely foreground furniture or object cluster"
+                confidence = "medium"
+
+            # Small near middle -> local object
+            elif area_label == "small" and depth == "near":
+                role = "likely smaller nearby object"
+                confidence = "low"
+
+            # Mid/far upper-middle -> background object or wall-attached region
+            elif depth in {"mid", "far"} and pos_y in {"top", "middle"}:
+                role = "likely background object or wall-adjacent region"
+                confidence = "low"
+
+            interpreted.append({
+                **rec,
+                "interpreted_role": role,
+                "interpretation_confidence": confidence,
+            })
+
+        return interpreted
+
+    @staticmethod
     def generate_room_summary(records: list[dict], top_k: int = 5) -> list[str]:
         summaries: list[str] = []
 
-        for rec in records[:top_k]:
+        interpreted = RoomReasoningPipeline.interpret_room_regions(records)
+
+        for rec in interpreted[:top_k]:
             line = (
                 f"Mask {rec['mask_id']} is a {rec['area_label']} region in the "
-                f"{rec['position_label']} area, with {rec['depth_label']} depth."
+                f"{rec['position_label']} area, with {rec['depth_label']} depth, "
+                f"and is interpreted as {rec['interpreted_role']}."
             )
             summaries.append(line)
 
         return summaries
+
+    @staticmethod
+    def describe_interpreted_regions(records: list[dict], top_k: int = 10) -> None:
+        interpreted = RoomReasoningPipeline.interpret_room_regions(records)
+
+        print("Interpreted room regions:")
+        print()
+
+        for rec in interpreted[:top_k]:
+            print(f"Mask {rec['mask_id']}:")
+            print(f"  position_label            = {rec['position_label']}")
+            print(f"  area_label                = {rec['area_label']}")
+            print(f"  depth_label               = {rec['depth_label']}")
+            print(f"  shape_label               = {rec['shape_label']}")
+            print(f"  interpreted_role          = {rec['interpreted_role']}")
+            print(f"  interpretation_confidence = {rec['interpretation_confidence']}")
+            print()
+
+    @staticmethod
+    def save_interpreted_json(records: list[dict], output_path: str | Path) -> None:
+        interpreted = RoomReasoningPipeline.interpret_room_regions(records)
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(interpreted, f, indent=2)
