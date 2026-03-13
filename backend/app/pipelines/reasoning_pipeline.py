@@ -154,7 +154,7 @@ class RoomReasoningPipeline:
                 priority_score += 0.1
 
             result = {
-                "mask_id": idx,
+                "mask_id": idx,  # area-order ID
                 "area": area,
                 "area_ratio": round(area_ratio, 4),
                 "area_label": area_label,
@@ -214,16 +214,19 @@ class RoomReasoningPipeline:
         semantic_results: list[dict],
     ) -> list[dict]:
         """
-        Merge CLIP predictions into reasoning records by area-rank order.
-        Since both are run on masks sorted by area, this is a simple first-pass alignment.
+        Merge CLIP predictions into reasoning records by mask_id / area-order ID.
         """
+        sem_by_mask_id = {
+            sem["mask_id_by_area_order"]: sem
+            for sem in semantic_results
+        }
+
         merged = []
-
-        for i, rec in enumerate(reasoning_records):
+        for rec in reasoning_records:
             merged_rec = dict(rec)
+            sem = sem_by_mask_id.get(rec["mask_id"])
 
-            if i < len(semantic_results):
-                sem = semantic_results[i]
+            if sem is not None:
                 merged_rec["semantic_best_label"] = sem.get("best_label")
                 merged_rec["semantic_best_score"] = sem.get("best_score")
                 merged_rec["semantic_top_predictions"] = sem.get("top_predictions", [])

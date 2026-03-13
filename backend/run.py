@@ -1,18 +1,7 @@
 from pathlib import Path
 
 from app.pipelines.image_loader import load_image, get_image_info
-from app.pipelines.preprocess import (
-    pil_to_numpy,
-    numpy_to_chw_tensor,
-    add_batch_dimension,
-    normalize_tensor,
-    describe_tensor,
-)
-from app.pipelines.depth_pipeline import MidasDepthPipeline
-from app.pipelines.segmentation_pipeline import SAMSegmentationPipeline
-from app.pipelines.reasoning_pipeline import RoomReasoningPipeline
-from app.pipelines.semantic_pipeline import CLIPSemanticPipeline
-from app.pipelines.game_map_pipeline import GameMapPipeline
+from app.pipelines.interior_pipeline import InteriorDesignPipeline
 
 
 def main() -> None:
@@ -20,10 +9,10 @@ def main() -> None:
     output_dir = Path("data/output")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("\n--- Phase 6: Game map abstraction ---\n")
+    print("\n--- Phase 8A: Interior redesign MVP ---\n")
 
     # -------------------------------------------------
-    # Part A: input recap
+    # Part A: load room image
     # -------------------------------------------------
     image = load_image(image_path)
     info = get_image_info(image)
@@ -34,197 +23,56 @@ def main() -> None:
     print(f"  mode   = {info['mode']}")
     print()
 
-    image_np = pil_to_numpy(image)
-    print("NumPy image:")
-    print(f"  shape = {image_np.shape}")
-    print(f"  dtype = {image_np.dtype}")
-    print(f"  min   = {image_np.min():.1f}")
-    print(f"  max   = {image_np.max():.1f}")
-    print(f"  top-left pixel RGB = {image_np[0, 0]}")
-    print()
-
-    image_tensor = numpy_to_chw_tensor(image_np)
-    describe_tensor("Tensor after HWC -> CHW and scaling to [0,1]", image_tensor)
-
-    batched_tensor = add_batch_dimension(image_tensor)
-    describe_tensor("Tensor after batch dimension", batched_tensor)
-
-    normalized_tensor = normalize_tensor(batched_tensor)
-    describe_tensor("Tensor after normalization", normalized_tensor)
-
     # -------------------------------------------------
-    # Part B: depth
+    # Part B: choose style
     # -------------------------------------------------
-    depth_pipeline = MidasDepthPipeline(model_type="MiDaS_small")
-    depth_map = depth_pipeline.predict_depth(image)
-    depth_pipeline.describe_depth(depth_map)
+    selected_style = "minimalist"
+    # try later:
+    # "luxury"
+    # "cyberpunk"
+    # "japanese_zen"
 
-    color_depth_path = output_dir / "room_depth_plasma.png"
-    gray_depth_path = output_dir / "room_depth_gray.png"
-
-    depth_pipeline.save_depth_visualization(depth_map, color_depth_path)
-    depth_pipeline.save_depth_grayscale(depth_map, gray_depth_path)
-
-    print("Saved depth outputs:")
-    print(f"  color depth map -> {color_depth_path}")
-    print(f"  grayscale depth -> {gray_depth_path}")
+    print(f"Selected style: {selected_style}")
     print()
 
     # -------------------------------------------------
-    # Part C: SAM
+    # Part C: generate redesign
     # -------------------------------------------------
-    sam_checkpoint = Path("checkpoints/sam_vit_b_01ec64.pth")
-    segmentation_pipeline = SAMSegmentationPipeline(
-        checkpoint_path=sam_checkpoint,
-        model_type="vit_b",
-    )
+    interior_pipeline = InteriorDesignPipeline()
 
-    masks = segmentation_pipeline.predict_masks(image)
-    segmentation_pipeline.describe_masks(masks, top_k=10)
-
-    mask_overlay_path = output_dir / "room_sam_overlay.png"
-    top_masks_dir = output_dir / "sam_top_masks"
-
-    segmentation_pipeline.save_mask_overlay(
+    redesigned_image, used_prompt = interior_pipeline.generate_redesign(
         image=image,
-        masks=masks,
-        output_path=mask_overlay_path,
-        top_k=20,
-        alpha=0.45,
-    )
-    segmentation_pipeline.save_top_masks(
-        masks=masks,
-        output_dir=top_masks_dir,
-        top_k=5,
+        style_name=selected_style,
+        strength=0.42,            # lower = preserve layout more
+        guidance_scale=7.0,
+        num_inference_steps=12,   # CPU-friendly
+        target_size=384,          # CPU-friendly
     )
 
-    print("Saved segmentation outputs:")
-    print(f"  mask overlay -> {mask_overlay_path}")
-    print(f"  top masks dir -> {top_masks_dir}")
+    print("Used prompt:")
+    print(f"  {used_prompt}")
     print()
 
     # -------------------------------------------------
-    # Part D: reasoning
+    # Part D: save outputs
     # -------------------------------------------------
-    reasoning_pipeline = RoomReasoningPipeline(
-        min_mask_area=1500,
-        max_masks=15,
-    )
+    prepared_input = interior_pipeline.prepare_init_image(image, target_size=384)
 
-    reasoning_records = reasoning_pipeline.analyze_masks(
-        masks=masks,
-        depth_map=depth_map,
-        near_is_smaller=True,
-    )
+    input_path = output_dir / f"interior_input_{selected_style}.png"
+    redesigned_path = output_dir / f"interior_redesign_{selected_style}.png"
+    compare_path = output_dir / f"interior_compare_{selected_style}.png"
 
-    reasoning_pipeline.describe_reasoning(reasoning_records, top_k=10)
+    interior_pipeline.save_image(prepared_input, input_path)
+    interior_pipeline.save_image(redesigned_image, redesigned_path)
+    interior_pipeline.save_side_by_side(prepared_input, redesigned_image, compare_path)
 
-    reasoning_json_path = output_dir / "room_reasoning.json"
-    reasoning_pipeline.save_reasoning_json(reasoning_records, reasoning_json_path)
-
-    print("Saved reasoning output:")
-    print(f"  reasoning json -> {reasoning_json_path}")
+    print("Saved interior mode outputs:")
+    print(f"  prepared input -> {input_path}")
+    print(f"  redesigned     -> {redesigned_path}")
+    print(f"  comparison     -> {compare_path}")
     print()
 
-    # -------------------------------------------------
-    # Part E: semantics with CLIP
-    # -------------------------------------------------
-    semantic_pipeline = CLIPSemanticPipeline()
-
-    candidate_labels = [
-        "wall",
-        "floor",
-        "bed",
-        "blanket",
-        "pillow",
-        "curtain",
-        "window",
-        "lamp",
-        "table",
-        "chair",
-        "door",
-        "shelf",
-        "cabinet",
-    ]
-
-    semantic_results = semantic_pipeline.label_masks(
-        image=image,
-        masks=reasoning_pipeline.filter_masks(masks),
-        candidate_labels=candidate_labels,
-        top_n_masks=8,
-        top_k_labels=3,
-    )
-
-    semantic_reasoning_records = reasoning_pipeline.merge_semantic_labels(
-        reasoning_records=reasoning_records,
-        semantic_results=semantic_results,
-    )
-
-    semantic_reasoning_json_path = output_dir / "room_semantic_reasoning.json"
-    reasoning_pipeline.save_semantic_reasoning_json(
-        semantic_reasoning_records,
-        semantic_reasoning_json_path,
-    )
-    reasoning_pipeline.describe_semantic_reasoning(
-        semantic_reasoning_records,
-        top_k=8,
-    )
-
-    print("Saved semantic reasoning output:")
-    print(f"  semantic reasoning json -> {semantic_reasoning_json_path}")
-    print()
-
-    summaries = reasoning_pipeline.generate_room_summary(
-        semantic_reasoning_records,
-        top_k=5,
-    )
-
-    print("Semantic room summaries:")
-    for line in summaries:
-        print(f"  - {line}")
-    print()
-
-    # -------------------------------------------------
-    # Part F: game map abstraction
-    # -------------------------------------------------
-    game_map_pipeline = GameMapPipeline()
-
-    symbolic_map = game_map_pipeline.build_symbolic_map(
-        semantic_reasoning_records=semantic_reasoning_records,
-        image_shape=depth_map.shape,
-    )
-
-    grid_map = game_map_pipeline.build_grid_map(
-        semantic_reasoning_records=semantic_reasoning_records,
-        image_shape=depth_map.shape,
-        grid_rows=8,
-        grid_cols=8,
-    )
-
-    symbolic_map_path = output_dir / "room_symbolic_game_map.json"
-    grid_map_path = output_dir / "room_grid_game_map.json"
-
-    game_map_pipeline.save_json(symbolic_map, symbolic_map_path)
-    game_map_pipeline.save_json(grid_map, grid_map_path)
-
-    print("Saved game map outputs:")
-    print(f"  symbolic map json -> {symbolic_map_path}")
-    print(f"  grid map json     -> {grid_map_path}")
-    print()
-
-    ascii_lines = game_map_pipeline.render_ascii_grid(grid_map)
-    print("ASCII game-map preview:")
-    for line in ascii_lines:
-        print(f"  {line}")
-    print()
-
-    game_summaries = game_map_pipeline.generate_game_map_summary(symbolic_map, grid_map)
-    print("Game map summaries:")
-    for line in game_summaries:
-        print(f"  - {line}")
-    print()
-
-    print("Phase 6 success: room understanding now maps into symbolic game-map structure.\n")
+    print("Phase 8A success: room image now produces a styled interior redesign.\n")
 
 
 if __name__ == "__main__":
